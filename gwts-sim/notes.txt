@@ -1,0 +1,32 @@
+# .n - net file
+
+Header {
+  u64 magic = b"GWTSNETS"
+  u64 version = 0
+
+  u64 signals_offs
+  u64 signal_count
+
+  u64 ffs_offs
+  u64 ff_count
+
+  u64 luts_offs
+  u64 lut_count
+} header
+
+Signal {
+  u32 len
+  u8[len] utf8
+}[header.signal_count] signals
+
+FF {
+  u64 clock
+  u64 input
+  u64 output
+}[header.ff_count] ffs
+
+LUT {
+  u64[6] input_ids;
+  u64 output_id;
+  u64 table
+}[header.lut_count] luts

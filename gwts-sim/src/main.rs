@@ -1,161 +1,236 @@
-use std::collections::HashMap;
-
 use anyhow::Result;
-use serde::Deserialize;
 
-#[derive(Deserialize, Debug)]
-struct NetsToml {
-    signals: Vec<String>,
-    luts: Vec<LutToml>,
-}
-
-#[derive(Deserialize, Debug)]
-struct LutToml {
-    inputs: Vec<String>,
-    outputs: Vec<String>,
-    table: HashMap<String, String>,
-}
+type SignalId = usize;
+type Tick = usize;
 
 struct Signal {
     name: String,
+    /// External signals are not set by simulation.
+    /// They can be consts or inputs from a testbench.
+    external: bool,
     state: bool,
-    last_update: usize,
+    last_update: Tick,
 }
 
-struct Lut {
-    // `inputs` and `outputs` hold signal indices.
-    inputs: Vec<usize>,
-    outputs: Vec<usize>,
-    // Each element in the truth table is indexed by treating the inputs as a binary representation of the truth table
-    // index.
-    table: Vec<Vec<bool>>,
+/// Flip-Flop (FF)
+/// This represents a 1-bit D flip-flop.
+struct FF {
+    prev_clock: bool,
+    clock: SignalId,
+    input: SignalId,
+    output: SignalId,
+    last_update: Tick,
 }
 
-impl Lut {
-    fn solve(&self, sigs: &mut Vec<Signal>) {
-        let input_state = self.inputs.iter().enumerate().fold(0, |acc, (pos, index)| {
-            if sigs[*index].state {
-                acc | (1 << pos)
-            } else {
-                acc
-            }
-        });
+/// Look-up Table (LUT)
+/// This represents a 6-to-1 LUT.
+struct LUT {
+    inputs: [SignalId; 6],
+    output: SignalId,
+    truth_table: u64,
+    last_update: Tick,
+}
 
-        for (i, state) in self.table[input_state].iter().enumerate() {
-            let index: usize = self.outputs[i];
-            let signal: &mut Signal = &mut sigs[index];
-            signal.state = *state;
+struct Simulation {
+    signals: Vec<Signal>,
+    ffs: Vec<FF>,
+    luts: Vec<LUT>,
+    tick: Tick,
+}
+
+impl Simulation {
+    fn new() -> Self {
+        Self {
+            signals: Vec::new(),
+            ffs: Vec::new(),
+            luts: Vec::new(),
+            tick: 0,
         }
     }
-}
 
-struct Context {
-    sigs: Vec<Signal>,
-    luts: Vec<Lut>,
-}
+    fn update(&mut self) {
+        self.tick += 1;
 
-fn main() -> Result<()> {
-    let nets_path = std::env::args()
-        .nth(1)
-        .expect("Usage: gtws-sim <net> <inputs>");
-    let nets_text = std::fs::read_to_string(nets_path)?;
-    let nets_toml: NetsToml = toml::from_str(&nets_text)?;
-
-    let mut sigs: Vec<Signal> = nets_toml
-        .signals
-        .iter()
-        .map(|name| Signal {
-            name: name.to_owned(),
-            state: false,
-            last_update: 0,
-        })
-        .collect();
-
-    let luts: Vec<Lut> = nets_toml
-        .luts
-        .iter()
-        .map(|lut| {
-            let inputs: Vec<usize> = lut
-                .inputs
-                .iter()
-                .map(|name| {
-                    sigs.iter().position(|sig| sig.name == *name).expect(
-                        format!("LUT outputs reference unknown signal ({:?}).", name).as_str(),
-                    )
-                })
-                .collect();
-
-            let outputs: Vec<usize> = lut
-                .outputs
-                .iter()
-                .map(|name| {
-                    sigs.iter().position(|sig| sig.name == *name).expect(
-                        format!("LUT outputs reference unknown signal ({:?}).", name).as_str(),
-                    )
-                })
-                .collect();
-
-            if lut.table.len() != 2usize.pow(lut.inputs.len() as u32) {
-                panic!("LUT truth table must fit exactly 2^N where N = number of inputs.");
+        for signal in &mut self.signals {
+            // External signals are always up to date.
+            if signal.external {
+                signal.last_update = self.tick;
             }
-
-            let table_tmp: Vec<(usize, Vec<bool>)> = lut
-                .table
-                .iter()
-                .map(|(input_state, output_state)| {
-                    let index = usize::from_str_radix(input_state, 16).unwrap();
-                    let state_int = usize::from_str_radix(output_state, 16).unwrap();
-
-                    let state: Vec<bool> = (0..outputs.len())
-                        .map(|bit| (state_int & (1usize << bit)) != 0)
-                        .collect();
-
-                    (index, state)
-                })
-                .collect();
-
-            let mut table = vec![Vec::new(); lut.table.len()];
-            for (index, state) in table_tmp {
-                table[index] = state;
-            }
-
-            Lut {
-                inputs,
-                outputs,
-                table,
-            }
-        })
-        .collect();
-
-    let inputs_path = std::env::args()
-        .nth(2)
-        .expect("Usage: gtws-sim <net> <inputs>");
-    let inputs_text = std::fs::read_to_string(inputs_path)?;
-
-    for (t, line) in inputs_text.lines().enumerate() {
-        let assignments = line.split(',').map(|s| s.trim()).map(|s| {
-            let mut s = s.split('=');
-            (
-                s.nth(0).expect("expected left side operand"),
-                s.nth(0).expect("expected right side operand") == "1",
-            )
-        });
-
-        for (name, value) in assignments {
-            let signal: &mut Signal = sigs.iter_mut().find(|s| s.name == name).unwrap();
-            signal.state = value;
         }
 
-        for lut in luts.iter() {
-            lut.solve(&mut sigs);
-        }
+        let mut ffs_updated: usize = 0;
+        let mut luts_updated: usize = 0;
+        let mut prev_ffs_updated: usize = 0;
+        let mut prev_luts_updated: usize = 0;
 
-        print!("t={}: ", t);
-        for sig in sigs.iter() {
-            print!("{}={} ", sig.name, if sig.state { 1 } else { 0 });
+        // Loop until all blocks are simulated.
+        // A block is considered simulatable if all of it's inputs have been updated this iteration.
+        // Once it has been simulated, its output is marked as up to date.
+        //
+        // There is stall protection.
+        loop {
+            let ffs_done: bool = ffs_updated == self.ffs.len();
+            let luts_done: bool = luts_updated == self.luts.len();
+
+            if !ffs_done {
+                for ff in &mut self.ffs {
+                    // Skip if we've already simulated this ff.
+                    if ff.last_update == self.tick {
+                        continue;
+                    }
+
+                    // Require the clock signal be up to date.
+                    let clock: &Signal = &self.signals[ff.clock];
+                    if clock.last_update != self.tick {
+                        continue;
+                    }
+
+                    // Require the input signal be up to date.
+                    let input: &Signal = &self.signals[ff.input];
+                    if input.last_update != self.tick {
+                        continue;
+                    }
+
+                    // There are no more ways this ff cannot be simulated.
+                    // So, mark it as being update to date.
+                    ff.last_update = self.tick;
+                    ffs_updated += 1;
+
+                    // Figure out if the clock rose from that last tick.
+                    let clock_rise = clock.state && (clock.state != ff.prev_clock);
+                    ff.prev_clock = clock.state;
+
+                    // Update the output.
+                    let input_state = input.state;
+                    let output: &mut Signal = &mut self.signals[ff.output];
+                    output.last_update = self.tick;
+                    if clock_rise {
+                        output.state = input_state;
+                    }
+                }
+            }
+
+            if !luts_done {
+                for lut in &mut self.luts {
+                    // Skip if we've already simulated this lut.
+                    if lut.last_update == self.tick {
+                        continue;
+                    }
+
+                    // Require the input signals be up to date.
+                    let inputs: Vec<&Signal> =
+                        lut.inputs.iter().map(|id| &self.signals[*id]).collect();
+                    for input in &inputs {
+                        if input.last_update != self.tick {
+                            continue;
+                        }
+                    }
+
+                    // There are no more ways this lut cannot be simulated.
+                    // So, mark it as being update to date.
+                    lut.last_update = self.tick;
+                    luts_updated += 1;
+
+                    let input_state = inputs
+                        .iter()
+                        .rev()
+                        .fold(0, |state, input| (state << 1) | (input.state as i32));
+
+                    // Update output signal.
+                    let next_state: bool = (lut.truth_table & (1 << input_state)) != 0;
+                    let output = &mut self.signals[lut.output];
+                    output.state = next_state;
+                }
+            }
+
+            // Exit when all blocks have been simulated.
+            if ffs_done && luts_done {
+                break;
+            }
+
+            // Detect a stalled simulation.
+            if ffs_updated < prev_ffs_updated {
+                panic!("`ffs_updated` overflowed");
+            }
+
+            if luts_updated < prev_luts_updated {
+                panic!("`luts_updated` overflowed");
+            }
+
+            let ffs_stalled: bool = prev_ffs_updated == ffs_updated && self.ffs.len() != 0;
+            let luts_stalled: bool = prev_luts_updated == luts_updated && self.luts.len() != 0;
+            prev_ffs_updated = ffs_updated;
+            prev_luts_updated = luts_updated;
+
+            if ffs_stalled && luts_stalled {
+                panic!("the simulation stalled");
+            }
+        }
+    }
+
+    fn print_signals(&self) {
+        for s in self.signals.iter().skip(2) {
+            print!("{}={}, ", s.name, if s.state { 1 } else { 0 });
         }
         println!();
     }
+}
 
+fn main() -> Result<()> {
+    let mut sim = Simulation::new();
+
+    sim.signals.push(Signal {
+        name: "#zero".into(),
+        external: true,
+        state: false,
+        last_update: 1,
+    });
+
+    sim.signals.push(Signal {
+        name: "#one".into(),
+        external: true,
+        state: true,
+        last_update: 1,
+    });
+
+    let a_id = sim.signals.len();
+    sim.signals.push(Signal {
+        name: "a".into(),
+        external: true,
+        state: false,
+        last_update: 0,
+    });
+
+    let b_id = sim.signals.len();
+    sim.signals.push(Signal {
+        name: "b".into(),
+        external: true,
+        state: false,
+        last_update: 0,
+    });
+
+    let c_id = sim.signals.len();
+    sim.signals.push(Signal {
+        name: "c".into(),
+        external: false,
+        state: false,
+        last_update: 0,
+    });
+
+    sim.luts.push(LUT {
+        inputs: [a_id, b_id, 0, 0, 0, 0],
+        output: c_id,
+        truth_table: 0x6666666666666666,
+        last_update: 0,
+    });
+
+    const INPUTS: [(bool, bool); 4] = [(false, false), (false, true), (true, false), (true, true)];
+
+    for (a, b) in INPUTS {
+        sim.signals[a_id].state = a;
+        sim.signals[b_id].state = b;
+        sim.update();
+        sim.print_signals();
+    }
     Ok(())
 }
