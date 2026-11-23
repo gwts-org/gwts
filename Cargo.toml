@@ -1,0 +1,3 @@
+[workspace]
+members = ["gwts-core", "gwts-sim", "gwts-syn"]
+resolver = "2"

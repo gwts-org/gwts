@@ -4,25 +4,20 @@ Header {
   u64 magic = b"GWTSNETS"
   u64 version = 0
 
-  u64 signals_offs
-  u64 signal_count
-
   u64 ffs_offs
   u64 ff_count
 
   u64 luts_offs
   u64 lut_count
+
+  u64 signals_offs
+  u64 signal_count
 } header
 
-Signal {
-  u32 len
-  u8[len] utf8
-}[header.signal_count] signals
-
 FF {
-  u64 clock
-  u64 input
-  u64 output
+  u64 clock_id
+  u64 input_id
+  u64 output_id
 }[header.ff_count] ffs
 
 LUT {
@@ -30,3 +25,8 @@ LUT {
   u64 output_id;
   u64 table
 }[header.lut_count] luts
+
+Signal {
+  u16 len
+  u8[len] utf8
+}[header.signal_count] signals

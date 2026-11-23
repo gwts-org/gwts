@@ -1,4 +1,5 @@
 use anyhow::Result;
+use gwts_core::net_file::Net;
 
 type SignalId = usize;
 type Tick = usize;
@@ -12,6 +13,17 @@ struct Signal {
     last_update: Tick,
 }
 
+impl Signal {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.into(),
+            external: false,
+            state: false,
+            last_update: 0,
+        }
+    }
+}
+
 /// Flip-Flop (FF)
 /// This represents a 1-bit D flip-flop.
 struct FF {
@@ -22,6 +34,18 @@ struct FF {
     last_update: Tick,
 }
 
+impl FF {
+    fn new(clock: SignalId, input: SignalId, output: SignalId) -> Self {
+        Self {
+            prev_clock: false,
+            clock,
+            input,
+            output,
+            last_update: 0,
+        }
+    }
+}
+
 /// Look-up Table (LUT)
 /// This represents a 6-to-1 LUT.
 struct LUT {
@@ -29,6 +53,17 @@ struct LUT {
     output: SignalId,
     truth_table: u64,
     last_update: Tick,
+}
+
+impl LUT {
+    fn new(inputs: [SignalId; 6], output: SignalId, truth_table: u64) -> Self {
+        Self {
+            inputs,
+            output,
+            truth_table,
+            last_update: 0,
+        }
+    }
 }
 
 struct Simulation {
@@ -179,50 +214,50 @@ impl Simulation {
 fn main() -> Result<()> {
     let mut sim = Simulation::new();
 
-    sim.signals.push(Signal {
-        name: "#zero".into(),
-        external: true,
-        state: false,
-        last_update: 1,
-    });
+    let net_bytes = std::fs::read("test.n")?;
+    let net: Net = Net::from_bytes(net_bytes.as_slice())?;
+    println!("net={net:?}");
 
-    sim.signals.push(Signal {
-        name: "#one".into(),
-        external: true,
-        state: true,
-        last_update: 1,
-    });
+    for ff in net.ffs {
+        sim.ffs.push(FF::new(
+            ff.clock_index as SignalId,
+            ff.input_index as SignalId,
+            ff.output_index as SignalId,
+        ));
+    }
 
-    let a_id = sim.signals.len();
-    sim.signals.push(Signal {
-        name: "a".into(),
-        external: true,
-        state: false,
-        last_update: 0,
-    });
+    for lut in net.luts {
+        let inputs = lut.input_indices.map(|index| index as SignalId);
+        sim.luts.push(LUT::new(
+            inputs,
+            lut.output_index as SignalId,
+            lut.truth_table,
+        ));
+    }
 
-    let b_id = sim.signals.len();
-    sim.signals.push(Signal {
-        name: "b".into(),
-        external: true,
-        state: false,
-        last_update: 0,
-    });
+    for signal in net.signals {
+        sim.signals.push(Signal::new(&signal.name));
+    }
 
-    let c_id = sim.signals.len();
-    sim.signals.push(Signal {
-        name: "c".into(),
-        external: false,
-        state: false,
-        last_update: 0,
-    });
+    const EXTERNAL_SIGNALS: [&str; 4] = ["#zero", "#one", "a", "b"];
+    for name in EXTERNAL_SIGNALS {
+        sim.signals
+            .iter_mut()
+            .find(|signal| signal.name == name)
+            .expect(&format!("expected to find {:} in signals", name))
+            .external = true;
+    }
 
-    sim.luts.push(LUT {
-        inputs: [a_id, b_id, 0, 0, 0, 0],
-        output: c_id,
-        truth_table: 0x6666666666666666,
-        last_update: 0,
-    });
+    let a_id = sim
+        .signals
+        .iter()
+        .position(|signal| signal.name == "a")
+        .unwrap();
+    let b_id = sim
+        .signals
+        .iter()
+        .position(|signal| signal.name == "b")
+        .unwrap();
 
     const INPUTS: [(bool, bool); 4] = [(false, false), (false, true), (true, false), (true, true)];
 
@@ -232,5 +267,6 @@ fn main() -> Result<()> {
         sim.update();
         sim.print_signals();
     }
+
     Ok(())
 }
