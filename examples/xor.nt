@@ -1,0 +1,5 @@
+signal zero
+signal a
+signal b
+signal c
+lut a b zero zero zero zero c 6

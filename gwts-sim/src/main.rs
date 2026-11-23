@@ -1,9 +1,12 @@
 use anyhow::Result;
 use gwts_core::net_file::Net;
 
+const USAGE: &'static str = "usage: gwts-sim <input>";
+
 type SignalId = usize;
 type Tick = usize;
 
+#[derive(Clone, Debug)]
 struct Signal {
     name: String,
     /// External signals are not set by simulation.
@@ -26,6 +29,7 @@ impl Signal {
 
 /// Flip-Flop (FF)
 /// This represents a 1-bit D flip-flop.
+#[derive(Clone, Copy, Debug)]
 struct FF {
     prev_clock: bool,
     clock: SignalId,
@@ -48,6 +52,7 @@ impl FF {
 
 /// Look-up Table (LUT)
 /// This represents a 6-to-1 LUT.
+#[derive(Clone, Copy, Debug)]
 struct LUT {
     inputs: [SignalId; 6],
     output: SignalId,
@@ -66,6 +71,7 @@ impl LUT {
     }
 }
 
+#[derive(Clone, Debug)]
 struct Simulation {
     signals: Vec<Signal>,
     ffs: Vec<FF>,
@@ -142,6 +148,7 @@ impl Simulation {
                     if clock_rise {
                         output.state = input_state;
                     }
+                    output.last_update = self.tick;
                 }
             }
 
@@ -175,6 +182,7 @@ impl Simulation {
                     let next_state: bool = (lut.truth_table & (1 << input_state)) != 0;
                     let output = &mut self.signals[lut.output];
                     output.state = next_state;
+                    output.last_update = self.tick;
                 }
             }
 
@@ -198,13 +206,16 @@ impl Simulation {
             prev_luts_updated = luts_updated;
 
             if ffs_stalled && luts_stalled {
+                println!("remaining ffs {}", self.ffs.len() - ffs_updated);
+                println!("remaining luts {}", self.luts.len() - luts_updated);
+                println!("simulation={:?}", self);
                 panic!("the simulation stalled");
             }
         }
     }
 
     fn print_signals(&self) {
-        for s in self.signals.iter().skip(2) {
+        for s in self.signals.iter() {
             print!("{}={}, ", s.name, if s.state { 1 } else { 0 });
         }
         println!();
@@ -214,7 +225,8 @@ impl Simulation {
 fn main() -> Result<()> {
     let mut sim = Simulation::new();
 
-    let net_bytes = std::fs::read("test.n")?;
+    let input_path = std::env::args().nth(1).expect(USAGE);
+    let net_bytes = std::fs::read(input_path)?;
     let net: Net = Net::from_bytes(net_bytes.as_slice())?;
     println!("net={net:?}");
 
@@ -239,7 +251,7 @@ fn main() -> Result<()> {
         sim.signals.push(Signal::new(&signal.name));
     }
 
-    const EXTERNAL_SIGNALS: [&str; 4] = ["#zero", "#one", "a", "b"];
+    const EXTERNAL_SIGNALS: [&str; 3] = ["zero", "a", "b"];
     for name in EXTERNAL_SIGNALS {
         sim.signals
             .iter_mut()

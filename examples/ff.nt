@@ -1,0 +1,5 @@
+signal zero
+signal a
+signal b
+signal c
+ff b a c
