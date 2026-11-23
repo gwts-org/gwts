@@ -1,9 +1,9 @@
 use anyhow::Result;
 use gwts_core::net_file::{Net, NetLUT, NetSignal};
 
-const AND_TRUTH_TABLE: u64 = 0x8888888888888888;
-const OR_TRUTH_TABLE: u64 = 0xEEEEEEEEEEEEEEEE;
-const XOR_TRUTH_TABLE: u64 = 0x6666666666666666;
+const AND_TRUTH_TABLE: u64 = 0x8;
+const OR_TRUTH_TABLE: u64 = 0xE;
+const XOR_TRUTH_TABLE: u64 = 0x6;
 
 fn main() -> Result<()> {
     let net = Net {
@@ -22,7 +22,7 @@ fn main() -> Result<()> {
         luts: vec![NetLUT {
             input_indices: [2, 3, 0, 0, 0, 0],
             output_index: 4,
-            truth_table: OR_TRUTH_TABLE,
+            truth_table: AND_TRUTH_TABLE,
         }],
     };
 
